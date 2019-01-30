@@ -1,0 +1,206 @@
+---
+title: "e1476 (ERECTA) mapping"
+author: "Zachary Lemmon"
+date: "`r format(Sys.time(),'%B %d, %Y')`"
+output: html_document
+---
+
+Mapping of ERECTA mutant (e1476). Uses two sequence pools (mutant and wildtype sibs) in an M82 x S. pimpinellifolium F2
+
+```{r fig.height=9.5, fig.width=7, setup}
+library(ggplot2)
+library(reshape2)
+
+setwd('/Users/zlemmon/Documents/NGS_Analysis/MutantMapping/e1476/')
+home <- getwd()
+
+```
+
+```{r ReadData}
+
+SL3.00_ChrSizes <- read.table("/Users/zlemmon/Documents/Genomes/SL3.0_ChrSizes.txt", header = FALSE)
+colnames(SL3.00_ChrSizes) <- c("Chromosome", "Length", "PreviousLengths")
+
+SNPdat <- read.table("e1476_segsites_filt.txt.gz", header = FALSE)
+head(SNPdat)
+colnames(SNPdat) <- c("Chromosome", "Position", "REF", "ALT", "SumDepth", 
+  "e1476mut", "e1476mut_GT", "e1476mut_REFdp", "e1476mut_ALTdp",
+  "e1476wt", "e1476wt_GT", "e1476wt_REFdp", "e1476wt_ALTdp",
+  "M82", "M82_GT", "M82_REFdp", "M82_ALTdp",
+  "pimp", "pimp_GT", "pimp_REFdp", "pimp_ALTdp"
+  )
+head(SNPdat)
+
+```
+
+```{r CalculatingStats}
+
+# Do some preliminary calculations for use in sliding window analysis.
+# SNPdat$sfasmut_SnpIdx  <- with(SNPdat, (sfasmut_ALTdp  / (sfasmut_ALTdp+sfasmut_REFdp)))
+# SNPdat$sfaswt_SnpIdx  <- with(SNPdat, (sfaswt_ALTdp  / (sfaswt_ALTdp+sfaswt_REFdp)))
+# 
+# SNPdat$sfasmutwt_DeltaSnpIdx <- with(SNPdat, sfasmut_SnpIdx-sfaswt_SnpIdx)
+SNPdat <- subset(SNPdat, select = !colnames(SNPdat) %in% c("e1476mut","e1476wt","M82","pimp"))
+str(SNPdat)
+
+SNPdat$e1476mut_dp  <- with(SNPdat, (e1476mut_REFdp + e1476mut_ALTdp))
+SNPdat$e1476wt_dp  <- with(SNPdat, (e1476wt_REFdp + e1476wt_ALTdp))
+SNPdat$M82_dp  <- with(SNPdat, (M82_REFdp + M82_ALTdp))
+SNPdat$pimp_dp  <- with(SNPdat, (pimp_REFdp + pimp_ALTdp))
+
+summary(SNPdat[,grepl("_dp",colnames(SNPdat))])
+#SNPdat[sort(sample(1:nrow(SNPdat),20)),grepl("dp",colnames(SNPdat))]
+SNPdat[sort(sample(1:nrow(SNPdat),20)),grepl("_dp",colnames(SNPdat))]
+
+# Create and check private SNP sets for pools
+SNPdat$group <- factor(paste(with(SNPdat, paste(sign(M82_REFdp), sign(M82_ALTdp),sep="")), with(SNPdat, paste(sign(pimp_REFdp), sign(pimp_ALTdp),sep="")), sep = ":"))
+
+table(SNPdat$group)
+SNPdat_nonhet_nonzero <- SNPdat[!grepl("11|00",SNPdat$group),]
+SNPdat_nonhet_nonzero <- droplevels.data.frame(SNPdat_nonhet_nonzero)
+table(SNPdat_nonhet_nonzero$group)
+
+SNPdat_nonhet_nonzero_seg <- subset(SNPdat_nonhet_nonzero, group %in% c("01:10","10:01"))
+seg_pool_SNPs <- apply(SNPdat_nonhet_nonzero_seg[,grepl("e1476",colnames(SNPdat_nonhet_nonzero_seg))], 1, FUN = function(x){sum(c("0/1") %in% x)>0})
+str(seg_pool_SNPs)
+sum(seg_pool_SNPs)
+SNPdat_nonhet_nonzero_seg <- SNPdat_nonhet_nonzero_seg[seg_pool_SNPs,]
+
+SNPdat_nonhet_nonzero_seg <- droplevels.data.frame(SNPdat_nonhet_nonzero_seg)
+table(SNPdat_nonhet_nonzero_seg$group)
+
+SNPdat_nonhet_nonzero_seg[sort(sample(1:nrow(SNPdat_nonhet_nonzero_seg),20)),]
+group_to_private <- data.frame(group=names(table(SNPdat_nonhet_nonzero_seg$group)),private=c("M82","pimp"))
+SNPdat_nonhet_nonzero_seg$private <- factor(group_to_private$private[match(SNPdat_nonhet_nonzero_seg$group, group_to_private$group)])
+head(SNPdat_nonhet_nonzero_seg)
+SNPdat_nonhet_nonzero_seg$ALT_allele <- with(SNPdat_nonhet_nonzero_seg, ifelse(private == "M82", substr(group, start = 2, stop = 2), ifelse(private == "pimp", substr(group, start = 4, stop = 4), "ERROR")))
+table(SNPdat_nonhet_nonzero_seg$private)
+table(SNPdat_nonhet_nonzero_seg$ALT_allele)
+head(SNPdat_nonhet_nonzero_seg)
+
+###################
+# Look at some average coverage information at segregating sites to do some sanity check filtering of SNPs. 
+# For example to exclude sites with excessively high coverage (potential transposable/repetitive sites) or excessively low coverage (noisy data likely SNP calling error).
+summary(SNPdat_nonhet_nonzero_seg[,grepl("_dp",colnames(SNPdat_nonhet_nonzero_seg))])
+
+SNPdat_nonhet_nonzero_seg_filt <- subset(SNPdat_nonhet_nonzero_seg, M82_dp >= 10 &  pimp_dp >= 10 & e1476mut_dp>10 & e1476wt_dp>10)
+SNPdat_filt2 <- SNPdat_nonhet_nonzero_seg_filt
+#
+#nrow(SNPdat_nonhet_nonzero_seg_filt)
+nrow(SNPdat_filt2)
+SNPdat_nonhet_nonzero_seg_filt[sort(sample(1:nrow(SNPdat_nonhet_nonzero_seg_filt),10)),]
+SNPdat_filt2[sort(sample(1:nrow(SNPdat_filt2),40)),grepl("Chr|Pos|GT",colnames(SNPdat_filt2))]
+
+table(SNPdat_filt2$Chromosome)
+
+#SNPdat_filt3 <- subset(SNPdat_filt2, private == "s2")
+#nrow(SNPdat_filt3)
+
+SNPdat_filt2$e1476mut_SnpIdx_M82 <- with(SNPdat_filt2, ifelse(ALT_allele == 1, e1476mut_ALTdp / e1476mut_dp , e1476mut_REFdp / e1476mut_dp))
+SNPdat_filt2$e1476wt_SnpIdx_M82 <- with(SNPdat_filt2, ifelse(ALT_allele == 1, e1476wt_ALTdp / e1476wt_dp , e1476wt_REFdp / e1476wt_dp))
+
+SNPdat_filt2[sort(sample(1:nrow(SNPdat_filt2),20)),c("Chromosome","Position","e1476mut_SnpIdx_M82", "e1476wt_SnpIdx_M82")]
+
+SNPdat_filt2$deltae1476mutbye1476wt_SnpIdx_M82 <- with(SNPdat_filt2, e1476mut_SnpIdx_M82 - e1476wt_SnpIdx_M82)
+
+table(SNPdat_filt2$Chromosome)
+
+SNPdat_filt2[sort(sample(1:nrow(SNPdat_filt2),30)),c("Chromosome","Position","deltae1476mutbye1476wt_SnpIdx_M82")]
+SNPdat_filt2[sort(sample(1:nrow(SNPdat_filt2),40)),grepl("Chr|Pos|dp",colnames(SNPdat_filt2))]
+#head(SNPdat_filt3)
+
+
+#########
+# sliding window analysis by sliding SNP window
+column_names <- c("chr", "start_snp", "start_pos", "size_bp", "DeltaSnpIdx_e1476mutbye1476wt_M82")
+MeanDeltaSnp.frame <- data.frame(matrix(nrow=0,ncol = length(column_names)))
+dimnames(MeanDeltaSnp.frame) <- list(NULL, column_names)
+nrow(SNPdat_filt2)
+window = 100
+slide = window / 10
+for(chr in levels(SNPdat_filt2$Chromosome)){
+  cat("Working on",chr,"... \n")
+  for(spos in seq(1, window, by = slide)){
+    cat("\tchunk", spos, "... \n")
+    
+    SnpIdxDat_sub_chr <- subset(SNPdat_filt2, Chromosome == chr)
+    temp.NumberSnps <- nrow(SnpIdxDat_sub_chr)
+    
+    SnpIdxDat_sub_chr$win <- NA
+    SnpIdxDat_sub_chr[spos:temp.NumberSnps,"win"] <- rep(seq(spos, temp.NumberSnps, by = window), each = window)[1:(temp.NumberSnps-spos+1)]
+    
+    temp.table <- table(SnpIdxDat_sub_chr$win)
+    SnpIdxDat_sub_chr <- subset(SnpIdxDat_sub_chr, win %in% names(temp.table[temp.table == window]))
+    DeltaSnpIdx.e1476mutbye1476wt.agg <- aggregate(SnpIdxDat_sub_chr$deltae1476mutbye1476wt_SnpIdx_M82, by = list(factor(SnpIdxDat_sub_chr$win)), mean)
+    #DeltaSnpIdx.e1476wtbypimp.agg <- aggregate(SnpIdxDat_sub_chr$deltae1476wtbypimp_SnpIdx_s2, by = list(factor(SnpIdxDat_sub_chr$win)), mean)
+    #DeltaSnpIdx.BbyS.agg<- aggregate(SnpIdxDat_sub_chr$deltaBbyS_SnpIdx_s2,by = list(factor(SnpIdxDat_sub_chr$win)), mean)
+    #DeltaSnpIdx.ABbyCWeight.agg<- aggregate(SnpIdxDat_sub_chr$deltaABbyCWeight_SnpIdx_ExD,by = list(factor(SnpIdxDat_sub_chr$win)), mean)
+    start_pos.agg <- aggregate(SnpIdxDat_sub_chr$Position, by = list(factor(SnpIdxDat_sub_chr$win)), min)
+    end_pos.agg <- aggregate(SnpIdxDat_sub_chr$Position, by = list(factor(SnpIdxDat_sub_chr$win)), max)
+
+    MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"chr"] <- chr
+    MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"start_snp"] <- as.numeric(as.character(start_pos.agg[,1]))
+    MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"number_of_snps"] <- window
+    MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"start_pos"] <- start_pos.agg[,2]
+    MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"size_bp"] <- end_pos.agg[,2] - start_pos.agg[,2]
+    MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"DeltaSnpIdx_e1476mutbye1476wt_M82"] <- DeltaSnpIdx.e1476mutbye1476wt.agg[,2]
+    #MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"DeltaSnpIdx_e1476wtbypimp_s2"] <- DeltaSnpIdx.e1476wtbypimp.agg[,2]
+    #MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"DeltaSnpIdx_BbyS_s2"] <- DeltaSnpIdx.BbyS.agg[,2]
+    #MeanDeltaSnp.frame[paste(rep(chr, each = nrow(start_pos.agg)), start_pos.agg[,2], sep = "_"),"DeltaSnpIdx_ABbyCWeight_ExD"] <- DeltaSnpIdx.ABbyCWeight.agg[,2]
+  }
+}
+
+MeanDeltaSnp.frame <- MeanDeltaSnp.frame[with(MeanDeltaSnp.frame, order(chr,start_pos)),]
+str(MeanDeltaSnp.frame)
+write.csv(MeanDeltaSnp.frame, "e1476_MeanDeltaSnpIdx.csv")
+
+head(MeanDeltaSnp.frame)
+
+#apply(MeanDeltaSnp.frame[,c("DeltaSnpIdx_e1476mutbye1476wt_M82","DeltaSnpIdx_e1476wtbypimp_s2","DeltaSnpIdx_BbyS_s2")], 2, FUN=function(x){quantile(x,probs = 0.95)})
+quantile(MeanDeltaSnp.frame[,c("DeltaSnpIdx_e1476mutbye1476wt_M82")], probs = 0.95)
+#e1476mutbyM8295 <- quantile(SNPdat_filt2[,c("deltae1476mutbyM82_SnpIdx_s2")], probs = 0.95)
+#e1476wtbypimp95 <- quantile(SNPdat_filt2[,c("deltae1476wtbypimp_SnpIdx_s2")], probs = 0.95)
+#BbyS95   <- quantile(SNPdat_filt2[,c("deltaBbyS_SnpIdx_s2")], probs = 0.95)
+#ABbyC95Weight <- quantile(SNPdat_filt3[,c("deltaABbyCWeight_SnpIdx_ExD")], probs = 0.95)
+
+pdf(paste0("e1476_DeltaSnpIdx_w",window,"snps_s",slide,".pdf"), height = 21, width = 14)
+
+# e1476mutbye1476wt
+p <- ggplot(MeanDeltaSnp.frame, aes(x = start_pos, y = DeltaSnpIdx_e1476mutbye1476wt_M82)) + geom_point(cex = 0.5) + facet_wrap(~ chr, ncol = 1)
+p <- p + expand_limits(y = c(-1,1)) + ggtitle(paste0("Mean DeltaSnpIdx - e1476mut by e1476wt - w",window,"s",slide))
+p <- p + geom_hline(yintercept = quantile(SNPdat_filt2[,c("deltae1476mutbye1476wt_SnpIdx_M82")], probs = 0.95), colour = "red")
+print(p)
+
+# e1476wtbypimp
+# p <- ggplot(MeanDeltaSnp.frame, aes(x = start_pos, y = DeltaSnpIdx_e1476wtbypimp_s2)) + geom_point(cex = 0.5) + facet_wrap(~ chr, ncol = 1)
+# p <- p + expand_limits(y = c(-1,1)) + ggtitle(paste0("Mean DeltaSnpIdx - e1476wtbypimp - w",window,"s",slide))
+# p <- p + geom_hline(yintercept = quantile(SNPdat_filt2[,c("deltae1476wtbypimp_SnpIdx_s2")], probs = 0.95), colour = "red")
+# print(p)
+# 
+# # BbyS (not weighted)
+# p <- ggplot(MeanDeltaSnp.frame, aes(x = start_pos, y = DeltaSnpIdx_BbyS_s2))+ geom_point(cex = 0.5) + facet_wrap(~ chr, ncol = 1)
+# p <- p + expand_limits(y = c(-1,1)) + ggtitle(paste0("Mean DeltaSnpIdx - BbyS - w",window,"s",slide))
+# p <- p + geom_hline(yintercept = quantile(SNPdat_filt2[,c("deltaBbyS_SnpIdx_s2")], probs = 0.95), colour = "red")
+# print(p)
+
+# ABbyC (weighted)
+#p <- ggplot(MeanDeltaSnp.frame, aes(x = start_pos, y = DeltaSnpIdx_ABbyCWeight_ExD))+ geom_point(cex = 0.5) + facet_wrap(~ chr, ncol = 1)
+#p <- p + expand_limits(y = c(-1,1)) + ggtitle(paste0("Mean DeltaSnpIdx - ABbyCWeight - w",window,"s",slide))
+#p <- p + geom_hline(yintercept = quantile(SNPdat_filt3[,c("deltaABbyCWeight_SnpIdx_ExD")], probs = 0.95), colour = "red")
+#print(p)
+
+dev.off()
+
+png(paste0("e1476_DeltaSnpIdx_w",window,"snps_s",slide,".png"), height = 10, width = 7, units = "in", res = 300)
+# e1476mutbye1476wt
+p <- ggplot(MeanDeltaSnp.frame, aes(x = start_pos, y = DeltaSnpIdx_e1476mutbye1476wt_M82)) + geom_point(cex = 0.5) + facet_wrap(~ chr, ncol = 1)
+p <- p + expand_limits(y = c(-1,1)) + ggtitle(paste0("Mean DeltaSnpIdx - e1476mut by e1476wt - w",window,"s",slide))
+p <- p + geom_hline(yintercept = quantile(SNPdat_filt2[,c("deltae1476mutbye1476wt_SnpIdx_M82")], probs = 0.95), colour = "red")
+print(p)
+dev.off()
+
+write.csv(SNPdat_filt2, file = "e1476_IndividualSNPdat_filt2.csv")
+
+```
+
+
